@@ -13,8 +13,10 @@ emergency systems, one-touch buttons and encryption keys.
 
 The radio's serial protocol and memory layout were recovered by decompiling the
 Windows CPS to obtain the interface information needed for interoperability (see
-[Legal & disclaimers](#legal--disclaimers)). The wire format is documented in
-[PROTOCOL.md](PROTOCOL.md).
+[Legal & disclaimers](#legal--disclaimers)). The serial wire protocol is
+documented in [PROTOCOL.md](PROTOCOL.md), and the codeplug memory layout
+(regions, records, and the field↔offset map) in
+[docs/codeplug-format.md](docs/codeplug-format.md).
 
 ## How it works
 
