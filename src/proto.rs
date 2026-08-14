@@ -314,18 +314,66 @@ pub struct RegionData {
     pub prefix_ok: bool,
 }
 
+/// How many times to send CONNECT before giving up. The first handshake after
+/// the port has been idle returns 0 bytes on real hardware and an immediate
+/// retry succeeds; observed on three radios across two USB-serial cables.
+const CONNECT_ATTEMPTS: usize = 5;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Handshake {
+    Ok,
+    Retry,
+    /// Something answered, but it is not a P64/P4 — retrying will not help.
+    Fatal,
+}
+
+fn classify_connect_reply(reply: &[u8]) -> Handshake {
+    if reply.starts_with(CONNECT_REPLY_PREFIX) {
+        Handshake::Ok
+    } else if reply.len() >= CONNECT_REPLY_LEN {
+        Handshake::Fatal
+    } else {
+        Handshake::Retry
+    }
+}
+
+/// Open a programming session, retrying the handshake on a short/empty reply.
+pub fn connect(port: &Serial, verbose: bool) -> Result<Vec<u8>> {
+    let mut last_len = 0usize;
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        let reply = transact(port, CONNECT, CONNECT_REPLY_LEN, verbose)?;
+        match classify_connect_reply(&reply) {
+            Handshake::Ok => return Ok(reply),
+            Handshake::Fatal => bail!(
+                "connect got an unexpected {}-byte reply (head {}). Is this a P64/P4?",
+                reply.len(),
+                hex(&reply[..reply.len().min(16)])
+            ),
+            Handshake::Retry => {
+                last_len = reply.len();
+                if attempt < CONNECT_ATTEMPTS {
+                    eprintln!(
+                        "  handshake returned {last_len} bytes; retrying ({}/{})...",
+                        attempt + 1,
+                        CONNECT_ATTEMPTS
+                    );
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+        }
+    }
+    bail!(
+        "connect handshake failed after {CONNECT_ATTEMPTS} attempts (last reply {last_len} bytes). \
+         Is the radio on, cable seated, and the right --port selected?"
+    )
+}
+
 /// Open a session and write the given pre-built region frames, in order.
 /// `frames` = (label, id, full_write_frame). Verifies the 19-byte ACK after
 /// each region. Always attempts to disconnect at the end.
 pub fn write_all(port: &Serial, frames: &[(String, Vec<u8>)], verbose: bool) -> Result<()> {
     eprintln!("Connecting...");
-    let reply = transact(port, CONNECT, CONNECT_REPLY_LEN, verbose)?;
-    if !reply.starts_with(CONNECT_REPLY_PREFIX) {
-        bail!(
-            "connect handshake failed (got {} bytes). Radio on? Right --port?",
-            reply.len()
-        );
-    }
+    connect(port, verbose)?;
     eprintln!("Connected. Writing {} regions...", frames.len());
 
     let result = (|| -> Result<()> {
@@ -365,15 +413,7 @@ pub fn write_all(port: &Serial, frames: &[(String, Vec<u8>)], verbose: bool) -> 
 /// Open a session and read every region. Always disconnects at the end.
 pub fn read_all(port: &Serial, verbose: bool) -> Result<Vec<RegionData>> {
     eprintln!("Connecting...");
-    let reply = transact(port, CONNECT, CONNECT_REPLY_LEN, verbose)?;
-    if !reply.starts_with(CONNECT_REPLY_PREFIX) {
-        bail!(
-            "connect handshake failed (got {} bytes, head: {}). \
-             Is the radio on, cable seated, and the right --port selected?",
-            reply.len(),
-            hex(&reply[..reply.len().min(16)])
-        );
-    }
+    connect(port, verbose)?;
     eprintln!("Connected. Reading {} regions...", REGIONS.len());
 
     let mut out = Vec::new();
@@ -431,13 +471,7 @@ pub fn read_region(port: &Serial, name: &str, verbose: bool) -> Result<Vec<u8>> 
 
 /// Open a session, read the live MCU identity + region r01, then disconnect.
 pub fn probe_identity(port: &Serial, verbose: bool) -> Result<(RawMcuInfo, Vec<u8>)> {
-    let reply = transact(port, CONNECT, CONNECT_REPLY_LEN, verbose)?;
-    if !reply.starts_with(CONNECT_REPLY_PREFIX) {
-        bail!(
-            "connect handshake failed (got {} bytes). Radio on? Right --port?",
-            reply.len()
-        );
-    }
+    connect(port, verbose)?;
     let result = (|| -> Result<(RawMcuInfo, Vec<u8>)> {
         let mcu = mcu_get(port, verbose)?;
         let r01 = read_region(port, "r01", verbose)?;
@@ -485,5 +519,22 @@ mod mcu_tests {
         let mut bad = sample_reply();
         bad[0] = 0x00; // break prefix
         assert!(parse_mcu_reply(&bad).is_err());
+    }
+
+    #[test]
+    fn connect_reply_classification() {
+        let mut good = vec![0u8; CONNECT_REPLY_LEN];
+        good[..CONNECT_REPLY_PREFIX.len()].copy_from_slice(CONNECT_REPLY_PREFIX);
+        assert_eq!(classify_connect_reply(&good), Handshake::Ok);
+
+        // The idle-port quirk: nothing comes back, so it is worth another go.
+        assert_eq!(classify_connect_reply(&[]), Handshake::Retry);
+        assert_eq!(classify_connect_reply(&[0x5F, 0x5F]), Handshake::Retry);
+
+        // A full-length reply that is not a P64/P4 handshake will not improve.
+        assert_eq!(
+            classify_connect_reply(&[0xAA; CONNECT_REPLY_LEN]),
+            Handshake::Fatal
+        );
     }
 }
