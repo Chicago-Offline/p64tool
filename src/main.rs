@@ -1,8 +1,9 @@
 //! p64tool - Linux programming tool for the Retevis MateTalk P64 / P4 DMR radio.
 //!
-//! Currently READ-ONLY: it dumps the radio's codeplug (memory image) so we can
-//! decode the field layout. Writing back to the radio is deliberately not
-//! implemented yet - a bad write could brick the radio.
+//! Reads and decodes the codeplug, and writes it back. The write path is gated:
+//! it refuses a radio whose MCU is not a P64/P4, writes only changed regions by
+//! default, and verifies by reading back. `roundtrip` proves decode->apply is
+//! byte-faithful on a dump before any of that is trusted.
 
 mod codeplug;
 mod config;
