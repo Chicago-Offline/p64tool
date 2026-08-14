@@ -13,9 +13,11 @@ workflow.
 
 ### Changed
 
-- The write path is **hardware-proven for an identity write**: a P4 V1.2 was
-  written with its own 11 regions, every region ACKed, and an independent re-read
-  was byte-identical to the pre-write backup. Modifying writes remain untested.
+- The write path is **hardware-proven**, identity and modifying, on a P4 V1.2.
+  An identity write of all 11 regions re-read byte-identical to the backup; a
+  one-field TOML edit changed exactly 19 bytes in one channel's name and nothing
+  else, across any region. Changed content has been exercised on `r08` only, and
+  on one model and firmware.
 - `write` never writes `r32` or `rFF`, matching the vendor CPS. Both are
   byte-identical across every radio measured, so writing them could only ever be
   a no-op or a mistake. They are still read and preserved.

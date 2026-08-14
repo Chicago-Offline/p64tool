@@ -163,19 +163,25 @@ to drop that byte again (below).
 
 Opcode `0x44` (`D`), acknowledged with `0x54` (`T`).
 
-✅ **Proven on hardware for an identity write.** A P4 V1.2 was written with its
-own 11 regions; every region ACKed and an independent re-read was byte-identical
-to the pre-write backup. The frame layout below was also validated offline: all
-11 write frames from an OEM CPS capture reproduce byte-for-byte from p64tool's
-builder.
+✅ **Proven on hardware.** On a P4 V1.2 / fw 1.0.0.0:
 
-⚠️ **A *modifying* write is still untested.** Writing a radio's own bytes back
-proves the framing, the ACK handshake and the region set; it does not prove the
-radio correctly applies *changed* content. Treat edited writes as unproven.
+- **Identity write** — all 11 regions written from the radio's own backup, every
+  region ACKed, and an independent re-read byte-identical to the backup.
+- **Modifying write** — one channel name changed via a TOML edit. Exactly one
+  region (`r08`) was sent, and the re-read showed **19 changed bytes, all inside
+  channel record 0's name field**. The rest of that record (frequencies, flags,
+  bookkeeping), all 255 other channel records and all 12 other regions were
+  untouched. The radio was then restored byte-for-byte from the backup.
+- The frame layout was validated offline first: all 11 write frames from an OEM
+  CPS capture reproduce byte-for-byte from p64tool's builder.
+
+⚠️ Scope: changed *content* has been exercised on `r08` only; the other regions
+have so far been written with identical content. One model and one firmware.
 
 ⚠️ p64tool's write session goes straight from `CONNECT` to the first write. The
 CPS additionally sends MCU-GET and reads `r02` first — most likely its password
-check (`RR02[23]`), since skipping it caused no observable difference.
+check (`RR02[23]`), since skipping it caused no observable difference across
+three successful write sessions.
 
 ```
 5F 5F <L1(2)> 00 23 00 26 02 00 44 11 <L2(2)> <ID_LO> <ID_HI> <data…> FF FF 55 AA
