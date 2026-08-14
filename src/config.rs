@@ -702,7 +702,13 @@ fn apply_general(cp: &mut Codeplug, gen: &General) -> Result<()> {
         );
         gm(r02, 76, gen.volume_max);
         gm(r02, 77, gen.volume_min);
-        gm(r02, 24, if gen.password_enable { 2 } else { 0xF8 });
+        // The "password off" sentinel is not one constant across models (0xF8 on
+        // P64 V1.1, 0x8F on P4 V1.2), so only rewrite it when the state changes.
+        if gen.password_enable {
+            gm(r02, 24, 2);
+        } else if g(r02, 24) == 2 {
+            gm(r02, 24, 0xF8);
+        }
         gm(
             r02,
             17,
@@ -893,7 +899,11 @@ pub fn apply(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 put_u16le(rec, 51, ch.rx_group.unwrap_or(0));
                 let key = ch.encrypt_key.unwrap_or(0);
                 rec[61] = (rec[61] & !0x01) | if key > 0 { 1 } else { 0 };
-                rec[62] = key;
+                // key 0 means "off": clear the enable bit but keep the stored
+                // slot, which the radio retains as the last-selected key.
+                if key > 0 {
+                    rec[62] = key;
+                }
                 if let Some(e) = ch.emergency_system {
                     rec[57] = e;
                 }
@@ -1045,6 +1055,18 @@ fn is_fill(rec: &[u8], fill: u8) -> bool {
 fn clear(rec: &mut [u8], fill: u8) {
     rec.iter_mut().for_each(|b| *b = fill);
 }
+/// True if a record is blank under either erase convention. Which one a region
+/// uses varies by model, so both must be recognised.
+fn is_blank(rec: &[u8]) -> bool {
+    is_fill(rec, 0x00) || is_fill(rec, 0xFF)
+}
+/// Blank an unused record, but leave an already-blank one exactly as found so
+/// it round-trips byte-for-byte whichever fill the radio used.
+fn clear_unused(rec: &mut [u8], fill: u8) {
+    if !is_blank(rec) {
+        clear(rec, fill);
+    }
+}
 /// Encryption-key material lives in 32 bytes at record offset 36. The CPS reads
 /// it as 8 little-endian u32 words shown big-endian, so canonical byte `j`
 /// (0..31) maps to stored byte `36 + (j/4)*4 + 3 - (j%4)`. Returns the full
@@ -1162,7 +1184,7 @@ fn decode_tables(
     let mut message = Vec::new();
     for i in 0..T_MSG.count {
         let rec = T_MSG.record(cp, i)?;
-        if is_fill(rec, 0x00) {
+        if is_blank(rec) {
             continue;
         }
         let len = u16le(rec, 2) as usize;
@@ -1247,7 +1269,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 };
                 put_u16le(rec, 38, (i + 1) as u16);
             }
-            None => clear(rec, 0xFF),
+            None => clear_unused(rec, 0xFF),
         }
     }
     for i in 0..T_RXGROUP.count {
@@ -1259,7 +1281,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 rec[64] = g.contacts.len() as u8;
                 rec[65] = (i + 1) as u8;
             }
-            None => clear(rec, 0xFF),
+            None => clear_unused(rec, 0xFF),
         }
     }
     for i in 0..T_ZONE.count {
@@ -1272,7 +1294,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 put_u16le(rec, 34, z.channels.len() as u16);
                 set_members(rec, 36, &z.channels, 16);
             }
-            None => clear(rec, 0xFF),
+            None => clear_unused(rec, 0xFF),
         }
     }
     for i in 0..T_SCAN.count {
@@ -1309,7 +1331,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 put_u16le(rec, 56, members.len() as u16);
                 set_members(rec, 58, &members, 16);
             }
-            None => clear(rec, 0xFF),
+            None => clear_unused(rec, 0xFF),
         }
     }
     for i in 0..T_MSG.count {
@@ -1324,7 +1346,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                     put_u16le(rec, 4 + k * 2, v);
                 }
             }
-            None => clear(rec, 0x00),
+            None => clear_unused(rec, 0x00),
         }
     }
     for i in 0..T_ALARM.count {
@@ -1340,7 +1362,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 rec[39] = a.rx_dwell_s;
                 rec[45] = (i + 1) as u8;
             }
-            None => clear(rec, 0xFF),
+            None => clear_unused(rec, 0xFF),
         }
     }
     for i in 0..T_ONETOUCH.count {
@@ -1385,7 +1407,7 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 set_name(rec, 4, 16, &k.name);
                 set_key_material(rec, &key_hex);
             }
-            None => clear(rec, 0xFF),
+            None => clear_unused(rec, 0xFF),
         }
     }
     Ok(())
@@ -1534,5 +1556,30 @@ mod tests {
         // truncation to max chars
         set_name(&mut b, 0, 4, "ABCDEFG");
         assert_eq!(get_name(&b, 0, 4), "ABCD");
+    }
+
+    #[test]
+    fn empty_name_stays_ff_filled() {
+        // A programmed-but-unnamed record is all-0xFF on the radio; writing a
+        // 0x0000 terminator there breaks a byte-faithful roundtrip.
+        let mut b = [0xFFu8; 32];
+        set_name(&mut b, 0, 16, "");
+        assert!(b.iter().all(|&x| x == 0xFF));
+    }
+
+    #[test]
+    fn blank_records_keep_their_existing_fill() {
+        let mut ff = [0xFFu8; 16];
+        clear_unused(&mut ff, 0x00);
+        assert!(ff.iter().all(|&b| b == 0xFF));
+
+        let mut zero = [0x00u8; 16];
+        clear_unused(&mut zero, 0xFF);
+        assert!(zero.iter().all(|&b| b == 0x00));
+
+        // A record with real content is still blanked with the given fill.
+        let mut used = [0x12u8; 16];
+        clear_unused(&mut used, 0xFF);
+        assert!(used.iter().all(|&b| b == 0xFF));
     }
 }

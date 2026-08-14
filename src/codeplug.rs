@@ -181,12 +181,14 @@ pub fn set_members(rec: &mut [u8], off: usize, members: &[u16], max: usize) {
 
 /// Write a UTF-16LE name using the radio's convention: the characters, then a
 /// single 0x0000 terminator (if it fits), then 0xFFFF padding for the rest.
+/// An empty name is all-0xFFFF with no terminator, matching how the radio
+/// stores a programmed-but-unnamed record.
 pub fn set_name(b: &mut [u8], off: usize, max_chars: usize, name: &str) {
     let chars: Vec<u16> = name.encode_utf16().take(max_chars).collect();
     for k in 0..max_chars {
         let v = if k < chars.len() {
             chars[k]
-        } else if k == chars.len() {
+        } else if k == chars.len() && !chars.is_empty() {
             0x0000
         } else {
             0xFFFF
