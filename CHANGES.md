@@ -8,8 +8,24 @@ workflow.
 
 ### New
 
+- `[general] serial_no` exposes the CPS-editable "Serial No" (region `r01`,
+  16 UTF-16LE chars). It is codeplug data, not a hardware id — it travels with a
+  clone. Omit the key from a config to leave the stored value untouched.
+- `[[scan]] include_selected` surfaces the CPS "Selected" pseudo-member (stored
+  as member id `0`). Previously `decode` silently dropped it and `apply`
+  unconditionally re-added it, so a scan list without "Selected" could not be
+  represented and would have been corrupted on write.
 - `read --allow-incomplete` keeps a partial dump for analysis. Without it, a
   short or malformed region is now an error and no dump is written.
+
+### Fixed
+
+- **Channel `power` was inverted.** Channel-record byte 33 bits `[1:0]` are
+  `0 = high, 2 = low`, not the reverse taken from the CPS decompile. Confirmed on
+  a live P4 V1.2: an OEM codeplug ships every channel at `0x80` and the CPS shows
+  High; setting one channel to Low moved that byte to `0x82`. Anything decoded
+  before this fix reported every channel's power backwards, and writing such a
+  config back would have flipped it on the radio.
 
 ### Changed
 

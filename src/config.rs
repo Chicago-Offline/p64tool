@@ -65,6 +65,9 @@ pub struct ScanList {
     pub name: String,
     /// 1-based channel indices (0 = "selected/current channel")
     pub channels: Vec<u16>,
+    /// The CPS "Selected" pseudo-member, stored as member id 0.
+    #[serde(default = "default_true")]
+    pub include_selected: bool,
     pub priority1: u16, // 0=selected, 0xFFFF=off, else 1-based channel
     pub priority2: u16,
     /// Reply-channel mode 0..2 (rec[33]; 1 = use designated channel).
@@ -137,8 +140,16 @@ pub struct RadioInfo {
     pub note: String,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct General {
+    /// CPS "Serial No" (region r01, 16 UTF-16LE chars). Codeplug data, not a
+    /// hardware id - it travels with a clone. Omit the key to leave it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_no: Option<String>,
     // --- core (region r02) ---
     /// 0 = digital only, 1 = analog only, 2 = analog+digital
     pub channel_mode: u8,
@@ -436,6 +447,24 @@ impl FromStr for Tone {
 
 // ---- decode: Codeplug -> RadioConfig --------------------------------------
 
+/// Channel TX power, channel-record byte 33 bits [1:0]. Verified on a P4 V1.2:
+/// bits 0 = high, 2 = low. The CPS decompile read this the other way round; a
+/// live High->Low edit moved the byte 0x80 -> 0x82.
+fn power_from_bits(b: u8) -> Power {
+    if b & 0x03 == 2 {
+        Power::Low
+    } else {
+        Power::High
+    }
+}
+
+fn power_to_bits(p: Power) -> u8 {
+    match p {
+        Power::Low => 2,
+        Power::High => 0,
+    }
+}
+
 /// Scalar setting access: CPS index WWxx[i] -> region payload[i-15].
 fn g(pl: &[u8], ww: usize) -> u8 {
     pl[ww - 15]
@@ -445,6 +474,7 @@ fn bit(pl: &[u8], ww: usize, mask: u8) -> bool {
 }
 
 fn decode_general(cp: &Codeplug, expert: bool) -> Result<General> {
+    let r01 = cp.region("r01")?.payload();
     let r02 = cp.region("r02")?.payload();
     let r03 = cp.region("r03")?.payload();
     let r0a = cp.region("r0A")?.payload();
@@ -478,6 +508,7 @@ fn decode_general(cp: &Codeplug, expert: bool) -> Result<General> {
         send_fail: g(r0a, 42) != 0,
     };
     Ok(General {
+        serial_no: Some(get_name(r01, 209, 16)),
         channel_mode: g(r02, 92),
         squelch: g(r02, 84),
         vox_enable: vox & 0x80 != 0,
@@ -555,11 +586,7 @@ pub fn decode(cp: &Codeplug, country: &str, expert: bool) -> Result<RadioConfig>
             continue; // empty slot
         }
         let pb = rec[34];
-        let power = if pb & 0x03 == 2 {
-            Power::High
-        } else {
-            Power::Low
-        };
+        let power = power_from_bits(pb);
         let mut ch = Channel {
             index: (l + 1) as u16,
             name: get_name(rec, 1, 16),
@@ -691,6 +718,10 @@ fn gm_bit(pl: &mut [u8], ww: usize, mask: u8, on: bool) {
 }
 
 fn apply_general(cp: &mut Codeplug, gen: &General) -> Result<()> {
+    if let Some(sn) = &gen.serial_no {
+        let r01 = cp.region_mut("r01")?.payload_mut();
+        set_name(r01, 209, 16, sn);
+    }
     {
         let r02 = cp.region_mut("r02")?.payload_mut();
         gm(r02, 92, gen.channel_mode);
@@ -848,11 +879,7 @@ pub fn apply(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
             Mode::Analog => 1,
         };
         // power bits [1:0], preserve other bits of the byte
-        let mut pb = rec[34] & !0x03;
-        pb |= match ch.power {
-            Power::Low => 0,
-            Power::High => 2,
-        };
+        let mut pb = (rec[34] & !0x03) | power_to_bits(ch.power);
         pb &= !0x40;
         if ch.rx_only {
             pb |= 0x40;
@@ -1163,11 +1190,12 @@ fn decode_tables(
             continue;
         }
         let n = u16le(rec, 56) as usize;
-        // members start at +58; slot 0 is the "selected channel" (0) marker.
+        // members start at +58; a member id of 0 is the "Selected" pseudo-channel.
         let all = get_members(rec, 58, n.min(16));
         scan.push(ScanList {
             index: (i + 1) as u16,
             name: get_name(rec, 0, 16),
+            include_selected: all.contains(&0),
             channels: all.into_iter().filter(|&v| v != 0).collect(),
             priority1: u16le(rec, 36),
             priority2: u16le(rec, 38),
@@ -1325,7 +1353,10 @@ fn apply_tables(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
                 if let Some(b) = s.scan_led {
                     rec[44] = (rec[44] & !0x80) | ((b as u8) << 7);
                 }
-                let mut members = vec![0u16]; // slot 0 = selected-channel marker
+                let mut members = Vec::with_capacity(s.channels.len() + 1);
+                if s.include_selected {
+                    members.push(0u16);
+                }
                 members.extend_from_slice(&s.channels);
                 put_u16le(rec, 54, (i + 1) as u16);
                 put_u16le(rec, 56, members.len() as u16);
@@ -1440,6 +1471,7 @@ fn comment_for(key: &str) -> Option<&'static str> {
         "scan_carrier_operated" => "false=time-operated scan, true=carrier-operated",
         "power_save_mode" => "0=off, 1=1:1, 2=1:2, 3=1:4",
         "power_save_delay_s" => "seconds before power-save kicks in",
+        "serial_no" => "CPS \"Serial No\", <=16 chars; codeplug data, not a hardware id",
         "radio_dmr_id" => "this radio's DMR ID (1..16776415)",
         "preamble" => "DMR preamble/head-frame count 1..10",
         "group_call_hang_ms" => "0..7000 ms, step 500",
@@ -1477,6 +1509,7 @@ fn comment_for(key: &str) -> Option<&'static str> {
         "key_type" => "arc4 | aes128 | aes256",
         "key" => "hex key; openssl rand -hex 16 (AES128) / 32 (AES256)",
         "channels" => "1-based channel numbers (0 = current/selected)",
+        "include_selected" => "also scan the currently selected channel (CPS \"Selected\")",
         "contacts" => "1-based contact numbers",
         "revert_channel" => "0=current channel, else channel number to alarm on",
         "alarm_type" => "0=none, 1=siren, 2=normal, 3=silent, 4=silent+voice",
@@ -1556,6 +1589,17 @@ mod tests {
         // truncation to max chars
         set_name(&mut b, 0, 4, "ABCDEFG");
         assert_eq!(get_name(&b, 0, 4), "ABCD");
+    }
+
+    /// Ground truth from a live P4 V1.2: an OEM codeplug ships every channel at
+    /// 0x80 and the CPS shows High; setting one channel to Low moved it to 0x82.
+    #[test]
+    fn power_bits_match_hardware() {
+        assert_eq!(power_from_bits(0x80), Power::High);
+        assert_eq!(power_from_bits(0x82), Power::Low);
+        for p in [Power::Low, Power::High] {
+            assert_eq!(power_from_bits(0x80 | power_to_bits(p)), p);
+        }
     }
 
     #[test]

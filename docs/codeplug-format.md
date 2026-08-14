@@ -41,7 +41,7 @@ a 16-byte region header). "Size" is the payload length `N`.
 
 | Region | Purpose | Size | Record layout |
 |--------|---------|------|---------------|
-| `r01` | Device identity (model label, DMR ID, fw/date strings) | 275 | scalar strings |
+| `r01` | Device identity: model labels, serial no., fw/CPS/date strings | 275 | scalar strings |
 | `r02` | General/menu settings **+ encryption-key table** (30×68 @144) | 2187 | scalar + table |
 | `r03` | DMR network/service, radio DMR ID, advanced timing | 51 | scalar |
 | `r04` | **Contacts** (200×40 @16) **+ RX-group lists** (32×72 @8016) | 10323 | two tables |
@@ -94,7 +94,7 @@ things for **D**igital (`type==0`) vs **A**nalog (`type==1`) channels — a deco
 |-----|-------|
 | 0–31 | Name (UTF-16LE, ≤16 chars, NUL-term, FF-pad) |
 | 32 | Channel type: 0=digital, 1=analog |
-| 33 | `&0x03` power (0=low, 2=high); `&0x30>>4` TX-admit criteria; `&0x40` RX-only. **A** also: `&0x0C` bandwidth/spacing |
+| 33 | `&0x03` power (**0=high, 2=low**); `&0x30>>4` TX-admit criteria; `&0x40` RX-only; `&0x80` set on every observed record, meaning unknown. **A** also: `&0x0C` bandwidth/spacing |
 | 34 | **D**: `&0x80` SMS delivery-confirm, `&0x03` SMS format. **A**: RESERVED |
 | 35 | RESERVED |
 | 36–39 | RX frequency, u32 LE, Hz |
@@ -159,6 +159,8 @@ everything else in the record is RESERVED.
   44 behaviour flags (`&0x02` talk-back, `&0x20` nuisance-delete, `&0x80` scan LED);
   56–57 member count (u16 LE); 58–89 member channel numbers (16 × u16 LE).
 - RESERVED: 41, 43, 45, 46–55.
+- Member id **0** is not a channel: it is the CPS "Selected" pseudo-channel
+  (scan whatever the knob is on). OEM codeplugs ship it as the sole member.
 - **Note:** priority-channel-1 is at offset **36**, not 34 — offset 34 is the
   separate designated/revert-TX channel. (Two earlier analyses conflated them.)
 
@@ -180,6 +182,47 @@ everything else in the record is RESERVED.
 Bound byte offsets (payload-relative). Everything else is reserved. Multi-byte IDs
 are BCD, little-endian byte order.
 
+- **`r01` device identity** — the CPS "Basic Information" screen, field for field.
+  Strings use the usual name convention (chars, `0000` terminator, `FFFF` pad).
+
+  | Payload | Enc | CPS label | Example |
+  |---------|-----|-----------|---------|
+  | 1 | UTF-16LE ×16 | Model Name, as written at factory programming | `P4 V1.2` |
+  | 49 | ASCII 14 | Last Programmed Time (`YYYYMMDDhhmmss`) | `20260813232207` |
+  | 81 | UTF-16LE | CPS Software Version, first half | `T020` |
+  | 91 | ASCII | CPS Software Version, date half | `2026-04-20` |
+  | 113 | UTF-16LE ×16 | band/tuning data file (CPS shows "Frequency Range") | `400 435 469.dat` |
+  | 145 | UTF-16LE ×16 | Model Name, as written by the last CPS to program it | `P4 V1.5` |
+  | 177 | UTF-16LE ×16 | MCU Version | `1.0.0.0` |
+  | 193 | ASCII | MCU Updata Date *(sic)* | `2025-06-23` |
+  | 209 | UTF-16LE ×16 | **Serial No.** (CPS-editable) | `50716RP041101784` |
+  | 241 | UTF-16LE | unidentified, constant across dumps | `v1.01` |
+
+  ⚠️ **"Model Name" is a CPS/codeplug version, not a hardware revision, and it
+  lives in two places.** On one unit: offset 1 held `P4 V1.2` and offset 145 was
+  all `FF`; the CPS displayed `P4 V1.2`. After a save from CPS `T020 2026-04-20`,
+  offset 145 became `P4 V1.5`, offset 1 was **unchanged**, and the CPS displayed
+  `P4 V1.5`. Best reading: offset 1 is stamped at factory programming, offset 145
+  by every subsequent CPS save, and the CPS shows 145 when set, else 1. So the
+  `V1.x` tracks the programming software, and two radios with identical hardware
+  and firmware can carry different labels purely by programming history.
+
+  This matters for `identity::VALIDATED`, which gates writes on the offset-1
+  label. Offset 1 surviving a CPS save is what keeps that gate stable — but a
+  unit factory-programmed by a different CPS build will report a different label
+  and fall out of the validated set despite being the same radio. Treat an
+  unknown label as "unverified field map", not "wrong hardware"; the
+  authoritative model check is MCU-GET (`DM5`), see PROTOCOL.md.
+  *(Offset-145 behaviour observed on one write from one CPS build; a second
+  read-back after another CPS session would confirm it.)*
+
+  The serial at 209 is a full 16 chars in the observed unit, so it has **no NUL
+  terminator** and runs straight into the field at 241 — read it length-bounded,
+  not NUL-bounded. It is codeplug data and travels with a clone, so it is not a
+  hardware id.
+
+  Offset 49 is rewritten by the CPS on every **write**; two `p64tool read` runs
+  either side of a CPS session left it unchanged, so reads do not touch it.
 - **`r02` general settings** — bound `WW02` indices (payload byte = index − 15):
   `17, 18, 19, 24, 76, 77, 84, 85, 86, 87, 92, 93, 94, 95, 100, 101, 104, 106,
   107, 108, 109, 110, 111, 140, 141`. Notables: `100/101` talk-permit-tone &
