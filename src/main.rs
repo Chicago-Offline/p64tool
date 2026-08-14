@@ -37,6 +37,10 @@ enum Cmd {
         /// Output directory (created if missing)
         #[arg(short, long, default_value = "p64-dump")]
         out: PathBuf,
+        /// Save the dump even if a region came back short or malformed.
+        /// Such a dump is for analysis only - never write it back to a radio.
+        #[arg(long)]
+        allow_incomplete: bool,
         /// Print every command/response on stderr
         #[arg(short, long)]
         verbose: bool,
@@ -109,7 +113,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Info { port, verbose } => info(&port, verbose),
-        Cmd::Read { port, out, verbose } => read(&port, out, verbose),
+        Cmd::Read {
+            port,
+            out,
+            allow_incomplete,
+            verbose,
+        } => read(&port, out, allow_incomplete, verbose),
         Cmd::Decode {
             dump,
             out,
@@ -427,16 +436,39 @@ fn info(port: &str, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn read(port: &str, out: PathBuf, verbose: bool) -> Result<()> {
+fn read(port: &str, out: PathBuf, allow_incomplete: bool, verbose: bool) -> Result<()> {
     let s = serial::Serial::open(port)?;
     let regions = proto::read_all(&s, verbose)?;
+
+    // A region that came back short still produces a plausible-looking dump
+    // directory, and a truncated dump is a valid --from-dump input. Refuse it.
+    let bad: Vec<String> = regions
+        .iter()
+        .filter(|r| !r.prefix_ok || r.reply.len() != r.requested)
+        .map(|r| {
+            format!(
+                "{}: got {} of {} bytes{}",
+                r.name,
+                r.reply.len(),
+                r.requested,
+                if r.prefix_ok { "" } else { " (bad header)" }
+            )
+        })
+        .collect();
+    if !bad.is_empty() && !allow_incomplete {
+        anyhow::bail!(
+            "incomplete read - nothing written:\n  {}\n\
+             A short region is usually a transient link glitch; run the read again. \
+             Use --allow-incomplete to keep a partial dump for analysis.",
+            bad.join("\n  ")
+        );
+    }
 
     std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
 
     let mut combined = Vec::new();
     let mut manifest = String::new();
     manifest.push_str("# p64tool codeplug dump\n# region  selector  requested  received  header_ok  offset_in_combined\n");
-    let mut all_ok = true;
 
     for r in &regions {
         let fname = out.join(format!("{}.bin", r.name));
@@ -451,9 +483,6 @@ fn read(port: &str, out: PathBuf, verbose: bool) -> Result<()> {
             combined.len(),
         ));
         combined.extend_from_slice(&r.reply);
-        if !r.prefix_ok {
-            all_ok = false;
-        }
     }
 
     let combined_path = out.join("codeplug_raw.bin");
@@ -470,10 +499,13 @@ fn read(port: &str, out: PathBuf, verbose: bool) -> Result<()> {
         out.display()
     );
     println!("Manifest: {}", manifest_path.display());
-    if all_ok {
+    if bad.is_empty() {
         println!("All region headers matched the expected protocol signatures. [OK]");
     } else {
-        println!("WARNING: some regions had unexpected headers - see manifest.txt.");
+        println!(
+            "WARNING: this dump is INCOMPLETE and must never be written back:\n  {}",
+            bad.join("\n  ")
+        );
     }
     Ok(())
 }
