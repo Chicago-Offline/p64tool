@@ -224,8 +224,12 @@ pub const REGIONS: &[Region] = &[
 // ---- write path ----------------------------------------------------------
 
 /// Region write order and 16-bit region ID, from `Form初始化.WW数组初始化0` /
-/// `Run写频`. Matches the read order. IDs are the values `WW_init` stamps at
-/// frame bytes [14..15] (note rFF uses 0x00FF here, unlike the read selector).
+/// `Run写频`. IDs are the values `WW_init` stamps at frame bytes [14..15].
+///
+/// `r32` and `rFF` are deliberately absent: the vendor CPS reads them but never
+/// writes them, and they are byte-identical across every radio observed, so
+/// writing them can only ever be a no-op or a mistake. They are still read (see
+/// `REGIONS`) and preserved in a dump.
 pub const WRITE_REGIONS: &[(&str, u16)] = &[
     ("r01", 1),
     ("r02", 2),
@@ -235,12 +239,13 @@ pub const WRITE_REGIONS: &[(&str, u16)] = &[
     ("r06", 6),
     ("r07", 7),
     ("r08", 8),
-    ("rFF", 255),
-    ("r32", 50),
     ("r0A", 10),
     ("rKL", 256),
     ("rML", 257),
 ];
+
+/// Regions that are read and preserved but never written back.
+pub const READ_ONLY_REGIONS: &[&str] = &["r32", "rFF"];
 
 /// Expected 19-byte write acknowledgement (opcode 0x54).
 pub const WRITE_ACK_PREFIX: &[u8] = &[
@@ -536,5 +541,29 @@ mod mcu_tests {
             classify_connect_reply(&[0xAA; CONNECT_REPLY_LEN]),
             Handshake::Fatal
         );
+    }
+
+    #[test]
+    fn calibration_regions_are_never_written() {
+        for name in READ_ONLY_REGIONS {
+            assert!(
+                REGIONS.iter().any(|r| r.name == *name),
+                "{name} must still be read"
+            );
+            assert!(
+                !WRITE_REGIONS.iter().any(|(n, _)| n == name),
+                "{name} must never be written"
+            );
+        }
+    }
+
+    #[test]
+    fn every_writable_region_is_also_read() {
+        for (name, _) in WRITE_REGIONS {
+            assert!(
+                REGIONS.iter().any(|r| r.name == *name),
+                "{name} is written but never read"
+            );
+        }
     }
 }

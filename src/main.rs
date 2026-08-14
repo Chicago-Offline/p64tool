@@ -87,7 +87,8 @@ enum Cmd {
         /// Country profile for the pre-write regulation check
         #[arg(short, long, default_value = "CH")]
         country: String,
-        /// Write every region, even unchanged ones (needed for an identity write)
+        /// Write every writable region, even unchanged ones (identity write).
+        /// r32 and rFF are never written, matching the vendor CPS.
         #[arg(long)]
         all: bool,
         /// Required to actually write (safety gate)
@@ -243,7 +244,6 @@ fn write_radio(
             "nothing to write: give a config to apply, or use --all for a full/identity write"
         );
     }
-
     // 3. Decide which regions to write. Default: only regions whose bytes
     //    changed vs the base. `--all` forces every region.
     let mut frames = Vec::new();
@@ -266,6 +266,10 @@ fn write_radio(
     if !skipped.is_empty() {
         println!("Unchanged (skipped): {}", skipped.join(", "));
     }
+    println!(
+        "Never written (read-only): {}",
+        proto::READ_ONLY_REGIONS.join(", ")
+    );
 
     // 4. Safety gate.
     if !yes {

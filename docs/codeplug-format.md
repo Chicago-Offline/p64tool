@@ -50,9 +50,9 @@ a 16-byte region header). "Size" is the payload length `N`.
 | `r07` | **Zones** (16×68 @16) | 1107 | table |
 | `r08` | **Channel table** (256×72 @16) | 18451 | table |
 | `r0A` | Alerts / man-down settings | 53 | scalar |
-| `r32` | Unknown — empty/erased on a default codeplug | 51 | — |
-| `rFF` | Unknown (likely factory/calibration) — erased on default | 619 | — |
-| `rKL` | Unknown — empty/erased on a default codeplug | 43 | — |
+| `r32` | Unknown — all zero on every radio observed | 51 | — |
+| `rFF` | Mostly-erased flash; **not** per-unit calibration | 619 | — |
+| `rKL` | **One-touch / quick-call buttons** (6×4 @16) | 43 | table |
 | `rML` | **Quick-text messages** (32×516 @16) | 16531 | table |
 
 The "E-number" mnemonic in the CPS record IDs is a list-type id independent of the
@@ -198,13 +198,24 @@ are BCD, little-endian byte order.
 
 ## Unknown / reserved regions
 
-`r32` (51 B), `rKL` (43 B) and `rFF` (619 B) carry **no interpretable data on a
-default codeplug**: `r32` and `rKL` payloads are all-zero; `rFF` is ~95 % `0xFF`
-(erased flash) with only a small `00 01 00 02 00` header. `rFF` is most likely
-factory/calibration storage. These are not a decode mystery — there is simply
-nothing there on a stock radio. p64tool preserves them verbatim. Establishing what
-(if anything) writes to them would require differential dumps (enable a feature,
-re-read, diff).
+`r32` (51 B) and `rKL` (43 B) payloads are all-zero and `rFF` (619 B) is ~99 %
+`0xFF` erased flash, on every radio measured.
+
+`rKL` is **not** unknown: it is the one-touch / quick-call table, 6 records of 4
+bytes at offset 16 (`0` mode, `1` contact, `2` action, `3` message index). It
+reads all-zero simply because no one-touch button has been configured. The CPS
+`.dat` shows the same six `KL0001`–`KL0006` records.
+
+`rFF` carries only a 4-byte header (`01 00 02 00`) and a single `0x01` at region
+offset 400. 🔴 **It is commonly assumed to be factory/calibration storage, and it
+cannot be** — it is byte-identical across four different radios in both factory
+and CPS-written states, whereas per-unit calibration necessarily varies. Whatever
+trim data the radio holds lives outside these region selectors.
+
+`r32` remains genuinely unmapped, but there is nothing in it to map.
+
+p64tool reads and preserves all three verbatim, and **never writes `r32` or
+`rFF`** — matching the vendor CPS, and safe because they never differ.
 
 ## Firmware notes
 

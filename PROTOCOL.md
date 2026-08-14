@@ -196,20 +196,25 @@ The CPS writes regions in this order. Note `rFF` uses `0x00FF` here, unlike its
 | r06 | 6 | `06 00` |
 | r07 | 7 | `07 00` |
 | r08 | 8 | `08 00` |
-| rFF | 255 | `FF FF` |
-| r32 | 50 | `32 00` |
 | r0A | 10 | `0A 00` |
 | rKL | 256 | `00 01` |
 | rML | 257 | `01 01` |
 
-⚠️ **The CPS reads 13 regions but writes only 11** — it never writes `r32` or
-`rFF`. `rFF` is mostly-erased flash and most likely factory/calibration storage.
-Leaving both alone is a sensible guard rail for any third-party writer.
+⚠️ **`r32` and `rFF` are read but never written**, by the CPS or by p64tool.
+Both are byte-identical across every radio observed — four units, factory and
+CPS-written — so writing them can only ever be a no-op or a mistake. (The CPS
+assigns them ids 50 and 255 respectively; those ids are unused in practice.)
 
-🔴 p64tool's own write table currently lists **all 13**. In normal use this is
-harmless, because it only writes regions whose bytes changed and nothing in a
-config touches `r32` or `rFF` — but `--all` (the identity write) would push them
-back. Diverging from the CPS on calibration storage is not obviously safe.
+Measured contents, identical everywhere:
+
+- `r32`: 33 bytes, all zero.
+- `rFF`: 601 bytes — a 4-byte header `01 00 02 00`, a single `0x01` at region
+  offset 400, and `0xFF` erased flash for the rest.
+
+⚠️ `rFF` is often assumed to be factory/calibration storage. **It cannot be
+per-unit calibration** — power and frequency trim vary between units and these
+bytes do not vary at all. Whatever calibration the radio holds is not reachable
+through these region selectors.
 
 ### Safety
 
