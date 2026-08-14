@@ -163,9 +163,19 @@ to drop that byte again (below).
 
 Opcode `0x44` (`D`), acknowledged with `0x54` (`T`).
 
-⚠️ **Implemented in p64tool but not yet exercised against a radio.** The frame
-layout below comes from the decompiled CPS and from OEM CPS write captures; no
-p64tool write has been performed on hardware. Treat it as unproven.
+✅ **Proven on hardware for an identity write.** A P4 V1.2 was written with its
+own 11 regions; every region ACKed and an independent re-read was byte-identical
+to the pre-write backup. The frame layout below was also validated offline: all
+11 write frames from an OEM CPS capture reproduce byte-for-byte from p64tool's
+builder.
+
+⚠️ **A *modifying* write is still untested.** Writing a radio's own bytes back
+proves the framing, the ACK handshake and the region set; it does not prove the
+radio correctly applies *changed* content. Treat edited writes as unproven.
+
+⚠️ p64tool's write session goes straight from `CONNECT` to the first write. The
+CPS additionally sends MCU-GET and reads `r02` first — most likely its password
+check (`RR02[23]`), since skipping it caused no observable difference.
 
 ```
 5F 5F <L1(2)> 00 23 00 26 02 00 44 11 <L2(2)> <ID_LO> <ID_HI> <data…> FF FF 55 AA

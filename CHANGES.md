@@ -8,9 +8,35 @@ workflow.
 
 ### New
 
+- `read --allow-incomplete` keeps a partial dump for analysis. Without it, a
+  short or malformed region is now an error and no dump is written.
+
 ### Changed
 
+- The write path is **hardware-proven for an identity write**: a P4 V1.2 was
+  written with its own 11 regions, every region ACKed, and an independent re-read
+  was byte-identical to the pre-write backup. Modifying writes remain untested.
+- `write` never writes `r32` or `rFF`, matching the vendor CPS. Both are
+  byte-identical across every radio measured, so writing them could only ever be
+  a no-op or a mistake. They are still read and preserved.
+- `connect` retries up to 5 times. The first handshake after an idle port
+  returns 0 bytes on real hardware; `info`, `read` and `write` previously had to
+  be run twice by hand.
+- `PROTOCOL.md` documents MCU-GET (`0x32`), the `0x44`→`0x54` write ACK, the
+  region write frame, and corrects the DTR/RTS requirement — the old text said
+  both lines are left de-asserted, which is backwards and leaves the radio silent.
+
 ### Fixed
+
+- `decode`→`apply` is byte-faithful on P4 codeplugs. Four asymmetries broke it:
+  an empty name wrote a `0x0000` terminator into an `0xFF`-filled field; blank
+  records were force-filled with one convention when it varies by radio; the
+  channel encryption key slot was zeroed whenever the enable bit was clear; and
+  the `r02[24]` password sentinel was rewritten to a value only factory radios
+  use. `roundtrip` now passes on six dumps spanning four radios.
+- A truncated dump can no longer be produced or loaded. `Codeplug::from_dump_dir`
+  validated only the first 18 bytes, so a short region reached
+  `raw[14..14+paylen]` and panicked; it now reports the actual sizes.
 
 ## 0.2.1 - 2026-07-17
 
