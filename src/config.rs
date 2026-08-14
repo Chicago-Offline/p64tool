@@ -1602,6 +1602,102 @@ mod tests {
         }
     }
 
+    /// Build a minimal in-memory codeplug whose regions are all zero-payload
+    /// except `r08`, which gets `n` channel records of `CHANNEL_STRIDE` bytes.
+    /// Frame shape must satisfy `codeplug::validate_frame`.
+    fn frame(payload: Vec<u8>) -> Vec<u8> {
+        let mut raw = vec![0x5f, 0x5f, 0, 0, 0x00, 0x26, 0x00, 0x23, 0x02, 0x00, 0x55, 0x11];
+        raw.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        raw.extend_from_slice(&payload);
+        raw.extend_from_slice(&[0xff, 0xff, 0x55, 0xaa]);
+        raw
+    }
+
+    /// One programmed analog channel, named, at High power (byte 34 == 0x80),
+    /// mirroring how an OEM codeplug ships.
+    fn one_channel_r08() -> Vec<u8> {
+        let mut rec = vec![0xffu8; CHANNEL_STRIDE];
+        set_name(&mut rec, 1, 16, "TEST");
+        rec[33] = 1; // analog
+        rec[34] = 0x80; // High power, no rx_only, no tx_admit bits
+        rec[37..41].copy_from_slice(&446_000_000u32.to_le_bytes()); // RX
+        rec[41..45].copy_from_slice(&446_000_000u32.to_le_bytes()); // TX
+        rec
+    }
+
+    /// decode and apply must agree on *which byte* carries channel power.
+    ///
+    /// `power_bits_match_hardware` pins the bit values but exercises the two
+    /// helpers in isolation, so a future edit could move `decode` to a
+    /// different record byte than `apply` writes and still pass. This drives a
+    /// real record through `decode` -> flip -> `apply` and asserts that exactly
+    /// one byte moved, and that it was the byte `decode` had read.
+    #[test]
+    fn decode_and_apply_agree_on_the_power_byte() {
+        const POWER_BYTE: usize = 34;
+
+        let mut regions = Vec::new();
+        for name in crate::codeplug::REGION_ORDER {
+            let payload = if *name == "r08" {
+                // Full channel table: decode walks all CHANNEL_COUNT slots.
+                let mut p = vec![0xffu8; CHANNEL_COUNT * CHANNEL_STRIDE];
+                p[..CHANNEL_STRIDE].copy_from_slice(&one_channel_r08());
+                p
+            } else {
+                // Oversized on purpose: several regions are indexed well past
+                // their nominal length by the list tables (r04 reaches ~8016 +
+                // 32*72). Capped below 0xFFFF because the frame header stores
+                // the payload length as a u16 - 64 KiB would wrap to 0.
+                vec![0u8; 0xF000]
+            };
+            regions.push(crate::codeplug::Region {
+                name: name.to_string(),
+                raw: frame(payload),
+            });
+        }
+        let mut cp = Codeplug { regions };
+
+        let before = cp.region("r08").unwrap().payload().to_vec();
+        assert_eq!(
+            before[POWER_BYTE], 0x80,
+            "fixture should start at the OEM High value"
+        );
+
+        // decode must read High out of byte 34.
+        let mut cfg = decode(&cp, "CH", true).unwrap();
+        assert_eq!(cfg.channel.len(), 1, "fixture should decode one channel");
+        assert_eq!(
+            cfg.channel[0].power,
+            Power::High,
+            "decode read power from the wrong byte"
+        );
+
+        // Flip only power, apply, and diff the whole region.
+        cfg.channel[0].power = Power::Low;
+        apply(&mut cp, &cfg).unwrap();
+        let after = cp.region("r08").unwrap().payload();
+
+        let diffs: Vec<usize> = (0..before.len().min(after.len()))
+            .filter(|&i| before[i] != after[i])
+            .collect();
+        assert_eq!(
+            diffs,
+            vec![POWER_BYTE],
+            "flipping power must move exactly the byte decode reads; \
+             decode/apply have drifted apart"
+        );
+        assert_eq!(after[POWER_BYTE], 0x82, "Low must encode as 0x82");
+
+        // And back again, to prove the mapping is symmetric on a real record.
+        cfg.channel[0].power = Power::High;
+        apply(&mut cp, &cfg).unwrap();
+        assert_eq!(
+            cp.region("r08").unwrap().payload(),
+            &before[..],
+            "High -> Low -> High must restore the original record"
+        );
+    }
+
     #[test]
     fn empty_name_stays_ff_filled() {
         // A programmed-but-unnamed record is all-0xFF on the radio; writing a
