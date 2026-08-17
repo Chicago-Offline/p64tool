@@ -465,6 +465,26 @@ fn power_to_bits(p: Power) -> u8 {
     }
 }
 
+/// Bandwidth is the 2-bit field `&0x0C`, not a single 0x04 flag. Value 3 is
+/// unobserved, so it decodes to None and leaves the stored bits alone.
+fn bandwidth_from_bits(b: u8) -> Option<f64> {
+    match (b & 0x0C) >> 2 {
+        0 => Some(12.5),
+        1 => Some(20.0),
+        2 => Some(25.0),
+        _ => None,
+    }
+}
+
+fn bandwidth_to_bits(khz: f64) -> Option<u8> {
+    for (v, bits) in [(12.5, 0u8), (20.0, 1), (25.0, 2)] {
+        if (khz - v).abs() < 0.01 {
+            return Some(bits);
+        }
+    }
+    None
+}
+
 /// Scalar setting access: CPS index WWxx[i] -> region payload[i-15].
 fn g(pl: &[u8], ww: usize) -> u8 {
     pl[ww - 15]
@@ -598,13 +618,15 @@ pub fn decode(cp: &Codeplug, country: &str, expert: bool) -> Result<RadioConfig>
             rx_mhz: expert.then(|| rx as f64 / 1e6),
             tx_mhz: expert.then(|| u32le(rec, 41) as f64 / 1e6),
             power,
-            bandwidth_khz: expert.then_some({
-                if mode_b == 1 && pb & 0x04 != 0 {
-                    25.0
-                } else {
-                    12.5
-                }
-            }),
+            bandwidth_khz: expert
+                .then(|| {
+                    if mode_b == 1 {
+                        bandwidth_from_bits(pb)
+                    } else {
+                        Some(12.5)
+                    }
+                })
+                .flatten(),
             rx_only: pb & 0x40 != 0,
             rx_tone: None,
             tx_tone: None,
@@ -886,10 +908,13 @@ pub fn apply(cp: &mut Codeplug, cfg: &RadioConfig) -> Result<()> {
         }
         if ch.mode == Mode::Analog {
             if let Some(bw) = ch.bandwidth_khz {
-                pb &= !0x04;
-                if bw >= 20.0 {
-                    pb |= 0x04;
-                }
+                let Some(bits) = bandwidth_to_bits(bw) else {
+                    bail!(
+                        "channel {}: unsupported bandwidth {bw} kHz (expected 12.5, 20 or 25)",
+                        ch.index
+                    );
+                };
+                pb = (pb & !0x0C) | (bits << 2);
             }
         }
         if let Some(a) = ch.tx_admit {
@@ -1493,7 +1518,7 @@ fn comment_for(key: &str) -> Option<&'static str> {
         "mode" => "digital | analog",
         "rx_mhz" | "tx_mhz" => "frequency in MHz (expert; PMR446 grid is fixed)",
         "power" => "high = 0.5 W (spec max, legal PMR446); low = reduced power",
-        "bandwidth_khz" => "12.5 or 25 (analog); digital is always 12.5",
+        "bandwidth_khz" => "12.5, 20 or 25 (analog); digital is always 12.5",
         "rx_only" => "listen-only, no transmit",
         "color_code" => "DMR color code 0..15 (must match the other radios)",
         "time_slot" => "DMR timeslot 1 or 2",
@@ -1600,6 +1625,23 @@ mod tests {
         for p in [Power::Low, Power::High] {
             assert_eq!(power_from_bits(0x80 | power_to_bits(p)), p);
         }
+    }
+
+    /// Ground truth from a live P4 V1.2: the OEM CPS writes 0x88 for a 25 kHz
+    /// analog channel and 0x80 for 12.5 kHz, so the field is the 2-bit &0x0C
+    /// and not a single 0x04 flag. Reading it as 0x04 reported those 25 kHz
+    /// channels as 12.5 kHz and made a narrowing write silently do nothing.
+    #[test]
+    fn bandwidth_bits_match_hardware() {
+        assert_eq!(bandwidth_from_bits(0x80), Some(12.5));
+        assert_eq!(bandwidth_from_bits(0x88), Some(25.0));
+        assert_eq!(bandwidth_from_bits(0x84), Some(20.0));
+        assert_eq!(bandwidth_from_bits(0x8C), None);
+        for v in [12.5, 20.0, 25.0] {
+            let bits = bandwidth_to_bits(v).unwrap();
+            assert_eq!(bandwidth_from_bits(0x80 | (bits << 2)), Some(v));
+        }
+        assert_eq!(bandwidth_to_bits(15.0), None);
     }
 
     #[test]
