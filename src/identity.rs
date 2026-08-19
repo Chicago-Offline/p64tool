@@ -15,6 +15,10 @@ pub struct DeviceIdentity {
 
 /// The codeplug model label, e.g. "P64 V1.1". UTF-16LE at r01 payload offset 1
 /// (CPS WW01 offset 16; payload = WW - codeplug::WW_TO_PAYLOAD), up to 16 chars.
+///
+/// The `V1.x` is the programming-software version, not a hardware revision, and
+/// the CPS shows a second copy from offset 145 that it rewrites on every save.
+/// Offset 1 is used here because it survives a CPS save unchanged.
 pub fn r01_model_label(r01_payload: &[u8]) -> String {
     let off = 16 - codeplug::WW_TO_PAYLOAD; // = 1
 

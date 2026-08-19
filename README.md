@@ -264,13 +264,13 @@ text editor, then `check` and `write` it.
 
 | Section              | Contents                                                          |
 |----------------------|-------------------------------------------------------------------|
-| `[general]`          | Radio-wide settings: channel mode, squelch, VOX, volumes, mic gains, voice prompt, power-save, radio DMR ID, man-down, work-alone, side-key assignments, programming password. |
+| `[general]`          | Radio-wide settings: serial number, channel mode, squelch, VOX, volumes, mic gains, voice prompt, power-save, radio DMR ID, man-down, work-alone, side-key assignments, programming password. |
 | `[general.tones]`    | The ~22 alert-tone toggles, talk-permit tone, master mute.        |
 | `[[channel]]`        | One per channel: name, mode, power; digital adds color code / contact / RX group / encryption / emergency / scan; analog adds CTCSS/DCS tones. |
 | `[[contact]]`        | A talkgroup or a radio to call: name, DMR ID, call type.          |
 | `[[rx_group]]`       | A named list of contacts (talkgroups) a channel listens to.       |
 | `[[zone]]`           | A named, ordered list of channels = one knob layout.              |
-| `[[scan]]`           | A named list of channels to scan, plus priority channels.         |
+| `[[scan]]`           | A named list of channels to scan, plus priority channels and the `include_selected` flag. |
 | `[[message]]`        | A preset text message.                                            |
 | `[[alarm]]`          | An emergency/alarm profile.                                       |
 | `[[one_touch]]`      | The 6 one-touch call/message slots.                               |
@@ -286,6 +286,12 @@ Lists are referenced by **1-based position**. A channel's `contact = 1` means
 "the first `[[contact]]` block", `scan_list = 2` means "the second `[[scan]]`",
 and so on; `0` means "none". **Reordering a list changes what the references
 point at** — keep the `index` fields and the reference numbers in sync.
+
+A `[[scan]]` list has one member that is not a channel reference: the CPS
+"Selected" pseudo-channel, stored as member id `0`, which scans whatever the
+knob is currently on. It is exposed as `include_selected` rather than as a `0`
+entry in `channels`, so an empty `channels = []` with `include_selected = true`
+is a scan list that only follows the selected channel.
 
 ### Comments and hidden fields
 
