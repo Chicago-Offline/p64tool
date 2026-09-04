@@ -104,6 +104,9 @@ enum Cmd {
         /// Refuse to write if the device firmware is not in p64tool's validated set
         #[arg(long)]
         require_known_version: bool,
+        /// Allow writing despite hard regulation findings (experimental use only)
+        #[arg(long)]
+        bypass_regulation: bool,
         #[arg(short, long)]
         verbose: bool,
     },
@@ -137,6 +140,7 @@ fn main() -> Result<()> {
             yes,
             no_verify,
             require_known_version,
+            bypass_regulation,
             verbose,
         } => write_radio(
             &port,
@@ -147,6 +151,7 @@ fn main() -> Result<()> {
             yes,
             no_verify,
             require_known_version,
+            bypass_regulation,
             verbose,
         ),
     }
@@ -167,6 +172,7 @@ fn write_radio(
     yes: bool,
     no_verify: bool,
     require_known_version: bool,
+    bypass_regulation: bool,
     verbose: bool,
 ) -> Result<()> {
     // 0. Identity pre-check (read-only): confirm this radio is one whose codeplug
@@ -233,10 +239,15 @@ fn write_radio(
                 "Regulation check ({}): {errors} error(s), {warnings} warning(s)",
                 p.name
             );
-            if errors > 0 {
+            if errors > 0 && !bypass_regulation {
                 anyhow::bail!(
                     "refusing to write: config violates {} (fix the errors)",
                     p.name
+                );
+            }
+            if errors > 0 && bypass_regulation {
+                println!(
+                    "WARNING: --bypass-regulation enabled; proceeding with {errors} hard finding(s)."
                 );
             }
         }
