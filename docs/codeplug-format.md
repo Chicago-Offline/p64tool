@@ -36,8 +36,29 @@ Names are **UTF-16LE**, NUL-terminated, `0xFF`-padded.
 
 ## The regions
 
-Records within a region are fixed-size and begin at **region offset 16** (there is
-a 16-byte region header). "Size" is the payload length `N`.
+Records within a region are fixed-size. "Size" is the payload length `N`.
+
+⚠️ **The `@N` figures below are region-header-relative, not `payload()` offsets.**
+They match the vendor CPS's own `Adim.*` copy arrays, which is why they are kept in
+that form. To index a `payload()` buffer, subtract **15**:
+
+```python
+# table starting at doc offset @N, record i, from payload() bytes
+base = N - 15
+rec  = payload[base + i*stride : base + (i+1)*stride]
+```
+
+For every table below `N == 16`, so the first record begins at payload offset **1**.
+
+An earlier revision said records "begin at region offset 16" and applied that
+directly to `payload()`. That conflated the two coordinate systems and decodes to
+garbage — see [Storage model and offset
+conventions](#storage-model-and-offset-conventions).
+
+⚠️ **The `Size` column below is the full frame length, not the payload length.**
+`payload()` is 18 bytes shorter in every region (14-byte frame header + 4-byte
+trailer). E.g. `r08` is listed as 18451 but `payload()` is 18433. Capacity maths
+must use the payload figure: `(18433 - 1) // 72 == 256` channels.
 
 | Region | Purpose | Size | Record layout |
 |--------|---------|------|---------------|
@@ -69,13 +90,54 @@ Two coordinate systems appear in the RE work; keep them straight:
 - **p64tool record offset** — what `src/config.rs` indexes as `rec[N]`. p64tool
   frames each record slightly differently, so a translation applies:
 
-  | Record family | p64tool base | Translation (p64tool ← CPS) |
-  |---------------|--------------|-----------------------------|
-  | Channel table (`r08`) | payload `l*72` | `p64tool = CPS + 1` |
-  | Tables with `base_ww = 16` (contacts, zones, scan, messages, emergency) | payload `1 + i*stride` | `p64tool = CPS` (shift 0) |
-  | RX-groups (`base_ww = 8016`), enc keys (`base_ww = 144`) | — | `p64tool = CPS` (shift 0) |
+  | Record family | table base in `payload()` | Translation |
+  |---------------|---------------------------|-------------|
+  | Channel table (`r08`, doc `@16`) | `1 + l*72` | `payload = @N - 15` |
+  | Tables with `base_ww = 16` (contacts, zones, scan, messages, emergency) | `1 + i*stride` | `payload = @N - 15` |
+  | RX-groups (doc `@8016`) | `8001 + i*72` | `payload = @N - 15` |
+  | Encryption keys (doc `@144`) | `129 + i*68` | `payload = @N - 15` |
 
-  The channel `+1` and the table shift-0 were both verified against a live dump.
+  **One rule for every table: `payload_offset = @N - 15`.** Offsets *within* a
+  record are unchanged — the channel/contact/zone field maps below are correct as
+  written.
+
+  ⚠️ An earlier revision listed the `base_ww = 16` and RX-group/enc-key families as
+  "shift 0" against a `@16` base applied directly to `payload()`. That decodes to
+  garbage. It also described the fix as a bare `+1` on CPS record offsets, which is
+  a coincidence of `16 - 15 == 1` and does not generalise to the `@8016` and `@144`
+  tables.
+
+### Verified against live dumps
+
+Two independent hardware reads (factory baseline and a flashed family codeplug),
+both agreeing:
+
+| Region | needle | found at payload | `@N - 15` predicts |
+|--------|--------|------------------|--------------------|
+| `r07` zones | `Family` (rec off 0) | `1` | `16 - 15 + 0 = 1` ✓ |
+| `r06` scan | `Family` (rec off 0) | `1` | `16 - 15 + 0 = 1` ✓ |
+| `r08` channels | `FAM ALL D` (rec off 0) | `1` | `16 - 15 + 0 = 1` ✓ |
+| `rML` messages | `HELLO` (rec off 4) | `5` | `16 - 15 + 4 = 5` ✓ |
+
+Decoding `r07` at base `16` instead yields a garbage name, member count `512`, and
+members `[768, 1024, 1280, 65280]`. At base `1`: name `Family`, count `11`, members
+`[9, 10, 11, 12, 13, 14, 1, 2, 3, 4, 5]`.
+
+`r08` at base `1` decodes 11 named channels with every field landing where the map
+says (type @32, RX @36–39, TX @40–43, record number @70–71), including one duplex
+pair at `462.7000` / `467.7000`.
+
+Corroboration: an OEM CPS write capture shows
+`readback_payload == b'\x00' + written_payload` byte-for-byte across all 11 written
+regions — independent confirmation of the single leading byte. This `-15` is the
+same constant derived independently for the CPS `.dat` container in
+[`Chicago-Offline/retevis_matetalk_p4`](https://github.com/Chicago-Offline/retevis_matetalk_p4)
+→ `CODEPLUG.md` (`-16 + 1`).
+
+⚠️ Contacts (`r04 @16`), RX-groups (`r04 @8016`) and encryption keys (`r02 @144`)
+are **empty on both available dumps** (`r04` is 10223/10305 bytes of `0xFF`), so
+their bases are derived from the `-15` rule rather than confirmed against populated
+records. Confirm with a codeplug that actually programs them.
 
 The CPS also uses a "WW index" for scalar regions: `WWxx[i]` addresses payload byte
 `i - 15`. So e.g. general-setting `WW02[92]` is `r02` payload byte 77.
