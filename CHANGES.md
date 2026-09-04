@@ -20,6 +20,17 @@ workflow.
 
 ### Fixed
 
+- **Channel `bandwidth_khz` was a 1-bit read of a 2-bit field.** Bandwidth is
+  channel-record byte 33 `&0x0C` with `0 = 12.5, 1 = 20, 2 = 25` kHz; the code
+  tested only `&0x04`. Three consequences, all confirmed against a live P4 V1.2
+  whose CPS-written 25 kHz channels store `0x88`: every 25 kHz channel decoded
+  as 12.5 kHz; 20 kHz was not representable at all; and because `apply` only
+  ever touched `0x04`, narrowing such a channel to 12.5 kHz wrote nothing and
+  left the radio wideband while the config claimed otherwise. `roundtrip` could
+  not catch this — it stayed byte-faithful precisely because `0x08` was never
+  written. An unknown value 3 now decodes to `None` and leaves the bits alone,
+  and an unsupported bandwidth is a hard error rather than a silent no-op.
+
 - **Channel `power` was inverted.** Channel-record byte 33 bits `[1:0]` are
   `0 = high, 2 = low`, not the reverse taken from the CPS decompile. Confirmed on
   a live P4 V1.2: an OEM codeplug ships every channel at `0x80` and the CPS shows

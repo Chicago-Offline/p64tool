@@ -156,7 +156,7 @@ things for **D**igital (`type==0`) vs **A**nalog (`type==1`) channels — a deco
 |-----|-------|
 | 0–31 | Name (UTF-16LE, ≤16 chars, NUL-term, FF-pad) |
 | 32 | Channel type: 0=digital, 1=analog |
-| 33 | `&0x03` power (**0=high, 2=low**); `&0x30>>4` TX-admit criteria; `&0x40` RX-only; `&0x80` set on every observed record, meaning unknown. **A** also: `&0x0C` bandwidth/spacing |
+| 33 | `&0x03` power (**0=high, 2=low**); `&0x30>>4` TX-admit criteria; `&0x40` RX-only; `&0x80` set on every observed record, meaning unknown. **A** also: `&0x0C>>2` bandwidth (**0=12.5, 1=20, 2=25 kHz**; 3 unobserved) |
 | 34 | **D**: `&0x80` SMS delivery-confirm, `&0x03` SMS format. **A**: RESERVED |
 | 35 | RESERVED |
 | 36–39 | RX frequency, u32 LE, Hz |

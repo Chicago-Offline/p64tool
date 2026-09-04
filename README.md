@@ -230,6 +230,11 @@ Validates against the country profile (band limits, simplex-only, bandwidth) and
 reports errors and warnings. `write` runs this automatically and refuses to
 proceed if there are errors.
 
+Use `--country GMRS` for the US GMRS handheld bands (462.550-462.725 and
+467.550-467.725 MHz). This permits duplex repeater pairs and enforces the
+20 kHz authorized bandwidth limit; licensing and channel-specific operating
+requirements remain the operator's responsibility.
+
 ### `write`
 
 ```sh
@@ -243,6 +248,10 @@ p64tool write --port /dev/ttyUSB0 radio.toml --yes
 - `--yes` is required to actually write (safety gate).
 - After writing, the codeplug is read back and verified; `--no-verify` skips that.
 - `--country` selects the profile for the mandatory pre-write regulation check.
+- `--bypass-regulation` explicitly permits hard regulation findings for
+  controlled experiments, such as shielded testing or emergency use. It does
+  not bypass `--yes`, device identity gating, changed-region writes, or
+  read-back verification.
 
 ### `roundtrip`
 
